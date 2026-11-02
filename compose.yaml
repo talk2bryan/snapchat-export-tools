@@ -1,0 +1,12 @@
+# One-off job, not a service:
+#   SNAP_IN=~/Downloads/snapchat SNAP_OUT=~/Pictures/snapchat docker compose run --rm snapchat
+# or put those variables in a .env file next to this one.
+services:
+  snapchat:
+    image: miacox/snapchat-export-tools:latest
+    build: .
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ${SNAP_IN:-./in}:/in:ro
+      - ${SNAP_OUT:-./out}:/out
+    command: ["/out", "/in", "--chat-media", "--tz", "${SNAP_TZ:-UTC}"]
