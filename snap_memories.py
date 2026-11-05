@@ -127,6 +127,9 @@ def index_memories(zips):
 
 def read_member(ref):
     with zipfile.ZipFile(ref["zip"]) as zf:
+        if "offset" in ref:
+            # the name is used by more than one file in this zip
+            return zf.read(next(i for i in zf.infolist() if i.header_offset == ref["offset"]))
         return zf.read(ref["name"])
 
 
@@ -362,8 +365,19 @@ def exif_args(kind, ext, utc, tz, gps, description=None):
 
 def finalize(path, kind, ext, utc, tz, gps, description=None):
     """Write metadata with exiftool and set the file mtime to the capture time."""
-    r = run(["exiftool", "-overwrite_original", "-q", "-m"]
-            + exif_args(kind, ext, utc, tz, gps, description) + [str(path)])
+    cmd = (["exiftool", "-overwrite_original", "-q", "-m"]
+           + exif_args(kind, ext, utc, tz, gps, description) + [str(path)])
+    r = run(cmd)
+    if r.returncode != 0 and b"movie fragments" in r.stderr:
+        # exiftool can't write to fragmented MP4s; remuxing (no re-encode) fixes it
+        tmp = Path(path).with_suffix(f".remux{Path(path).suffix}")
+        remux = run(["ffmpeg", "-y", "-v", "error", "-i", str(path), "-map", "0", "-c", "copy",
+                     "-movflags", "+faststart", str(tmp)])
+        if remux.returncode == 0:
+            tmp.replace(path)
+            r = run(cmd)
+        else:
+            tmp.unlink(missing_ok=True)
     os.utime(path, (utc.timestamp(), utc.timestamp()))
     return r.returncode == 0, r.stderr.decode(errors="replace").strip()[-300:]
 
@@ -419,7 +433,10 @@ def process_video(job, out, work_dir, crf):
             if not overlay_path.exists():
                 png = overlay_png(part["overlay"])
                 if png:
-                    overlay_path.write_bytes(png)
+                    # another worker may be about to read it, so write it in one go
+                    tmp = overlay_path.with_suffix(f".{os.getpid()}.part")
+                    tmp.write_bytes(png)
+                    tmp.rename(overlay_path)
                 else:
                     overlay_path = None
                     note = "overlay unreadable, main only;"
@@ -829,6 +846,11 @@ def main():
     parser.add_argument("--tz", type=ZoneInfo, default=None,
                         help="timezone to use when there's no GPS fix within 30 days, "
                              "e.g. America/Winnipeg (default UTC)")
+    parser.add_argument("--no-sort", dest="sort", action="store_false",
+                        help="with --chat-media, don't move memes and stickers into subfolders")
+    parser.add_argument("--skip-resends", action="store_true",
+                        help="with --chat-media, keep only the first send of a snap that was "
+                             "sent more than once in a conversation")
     args = parser.parse_args()
     zips = find_zips(args.zips)
 
@@ -839,7 +861,8 @@ def main():
         import snap_chat_media
         print()
         snap_chat_media.process_chat_media(Path(args.out) / "chat_media", zips,
-                                           args.workers, args.crf, args.tz)
+                                           args.workers, args.crf, args.tz, args.sort,
+                                           args.skip_resends)
 
 
 if __name__ == "__main__":

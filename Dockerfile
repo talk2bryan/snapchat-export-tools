@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.title="snapchat-export-tools" \
       org.opencontainers.image.source="https://github.com/talk2bryan/snapchat-export-tools"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl \
+    && apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
