@@ -30,7 +30,7 @@ jobs:
       - run: |
           docker run --rm ${{ env.IMAGE }}:test --help
           docker run --rm --entrypoint python ${{ env.IMAGE }}:test /app/snap_chat_media.py --help
-          docker run --rm --entrypoint sh ${{ env.IMAGE }}:test -c "ffmpeg -version | head -1 && exiftool -ver"
+          docker run --rm --entrypoint sh ${{ env.IMAGE }}:test -c "ffmpeg -version | head -1 && exiftool -ver && tesseract --version | head -1"
 
       - uses: docker/login-action@v3
         with:
