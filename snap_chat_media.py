@@ -31,11 +31,17 @@ Videos aren't sorted, there's nothing reliable to tell a meme video apart.
 The same snap sent again later (forwarded, re-sent to a group) is kept once
 per send. With --skip-resends only the first send in each folder is kept.
 
+With --merge, OUT_DIR can already hold an earlier run (say from an older
+export). Snaps that run already handled are left alone, new files never take
+an existing name, and the timezone falls back to the nearest GPS-based one
+from the earlier runs before --tz. Files that FAILED before are tried again.
+
 Usage:
-  snap_chat_media.py OUT_DIR mydata.zip [mydata-2.zip ...]
+  snap_chat_media.py OUT_DIR mydata.zip [mydata-2.zip ...] [--merge]
 """
 import argparse
 import bisect
+import csv
 import io
 import os
 import re
@@ -438,6 +444,56 @@ def describe(msg):
     return f"Snapchat: from {msg['sender'] or msg['conversation']}"
 
 
+class PreviousRun:
+    """What earlier runs left in OUT_DIR, for --merge."""
+
+    # skips that don't mean the snap was dealt with: an overlay may pair up
+    # with its snap this time, and an unreadable file may be readable
+    RETRY_SKIPS = {"skipped-unpaired-overlay", "skipped-unreadable"}
+    TZ_RE = re.compile(r"^(\S+) \((gps|nearest-gps|previous-run)\)$")
+
+    def __init__(self, out):
+        rows = []
+        if (out / "_report.csv").exists():
+            with open(out / "_report.csv", newline="") as f:
+                rows = list(csv.DictReader(f))
+        # FAILED rows are dropped, their snaps get another go
+        self.rows = [r for r in rows if r["action"] != "FAILED"]
+        failed = {r["output"] for r in rows if r["action"] == "FAILED"}
+
+        self.done = {}  # source -> output it went into ("" if skipped)
+        zones = []
+        for row in self.rows:
+            if row["action"] in self.RETRY_SKIPS:
+                continue
+            for source in row["sources"].split(" + "):
+                if source:
+                    self.done.setdefault(source, row.get("output", ""))
+            m = self.TZ_RE.match(row.get("tz", ""))
+            if m and row.get("utc"):
+                utc = datetime.strptime(row["utc"], "%Y-%m-%d %H:%M:%S")
+                zones.append((utc.replace(tzinfo=timezone.utc).timestamp(), m.group(1)))
+        zones.sort()
+        self.zone_times = [t for t, _ in zones]
+        self.zones = [z for _, z in zones]
+
+        # a failed file may be half-written; let its retry have the name back
+        self.names = {p.relative_to(out).as_posix() for p in out.rglob("*")
+                      if p.is_file() and p.relative_to(out).parts[0] != "_work"} - failed
+
+    def timezone_for(self, utc):
+        """-> (ZoneInfo, "previous-run") from the nearest earlier GPS-based
+        timezone within 30 days, or None"""
+        ts = utc.timestamp()
+        i = bisect.bisect_left(self.zone_times, ts)
+        nearby = [j for j in (i - 1, i) if 0 <= j < len(self.zone_times)]
+        if nearby:
+            j = min(nearby, key=lambda j: abs(self.zone_times[j] - ts))
+            if abs(self.zone_times[j] - ts) < 30 * 86400:
+                return ZoneInfo(self.zones[j]), "previous-run"
+        return None
+
+
 def output_ext(output):
     if output["kind"] == "video":
         return "mp4"
@@ -450,11 +506,18 @@ def output_ext(output):
 
 
 def process_chat_media(out, zips, workers=4, crf=18, fallback_tz=None, sort=True,
-                       skip_resends=False):
+                       skip_resends=False, merge=False):
     start = time.time()
     out = Path(out)
     work = out / "_work"
     review = out / "_review"
+    previous = PreviousRun(out) if merge else None
+    if previous:
+        print(f"Merging into {out}: {len(previous.names)} files, "
+              f"{len(previous.done)} sources already handled")
+    elif (out / "_report.csv").exists():
+        print(f"  note: {out} has an earlier run in it, files with the same name will be "
+              "overwritten (--merge adds to it instead)")
     for d in (out, work, review / "unpaired_overlays", review / "unreadable"):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -480,7 +543,7 @@ def process_chat_media(out, zips, workers=4, crf=18, fallback_tz=None, sort=True
     report = []
     jobs = []
     report_info = {}
-    name_for = NameAllocator()
+    name_for = NameAllocator(previous.names if previous else ())
     planned = []
 
     for second in sorted(by_second):
@@ -523,6 +586,23 @@ def process_chat_media(out, zips, workers=4, crf=18, fallback_tz=None, sort=True
     in_chain = {k for c in chains for k in c}
     heads = [i for i in range(len(resolved)) if i not in in_chain or i in chain_of]
 
+    if previous:
+        new_heads = []
+        for i in heads:
+            keys = chain_of.get(i, [i])
+            seen = [short_name(items[k]["main"]) for k in keys
+                    if short_name(items[k]["main"]) in previous.done]
+            if not seen:
+                new_heads.append(i)
+                continue
+            report.append(dict(action="skipped-already-exported",
+                               sources=" + ".join(short_name(ref) for k in keys
+                                                  for ref in items[k]["refs"]),
+                               note=f"in {previous.done[seen[0]] or 'earlier run (skipped)'}"))
+        heads = new_heads
+        chains = [c for c in chains if c[0] in heads]
+        in_chain = {k for c in chains for k in c}
+
     first_send = {}
     if skip_resends:
         photos = {i: items[i]["main"] for i in heads if items[i]["kind"] == "photo"}
@@ -556,6 +636,8 @@ def process_chat_media(out, zips, workers=4, crf=18, fallback_tz=None, sort=True
             continue
         utc = output["main"]["utc"]
         tz, tz_source = timeline.timezone_for(utc, None)
+        if previous and tz_source in ("default-tz", "utc-fallback"):
+            tz, tz_source = previous.timezone_for(utc) or (tz, tz_source)
         if category:
             folder = f"{folder}/{category}"
         name = name_for(utc, tz, output_ext(output), folder)
@@ -587,7 +669,16 @@ def process_chat_media(out, zips, workers=4, crf=18, fallback_tz=None, sort=True
 
     run_jobs(jobs, work, out, crf, workers, on_done)
     shutil.rmtree(work, ignore_errors=True)
-    write_report(out / "_report.csv", report,
+    rows = report
+    if previous:
+        # skips an earlier run already recorded would only pile up
+        recorded = {(r["action"], r["sources"]) for r in previous.rows}
+        rows = previous.rows + [
+            r for r in report
+            if not (r["action"].startswith("skipped-")
+                    and ((r["action"], r["sources"]) in recorded
+                         or all(s in previous.done for s in r["sources"].split(" + "))))]
+    write_report(out / "_report.csv", rows,
                  ["output", "action", "sources", "utc", "local", "tz", "conversation",
                   "sender", "direction", "matched", "category", "note"])
 
@@ -629,9 +720,12 @@ def main():
     parser.add_argument("--skip-resends", action="store_true",
                         help="keep only the first send of a snap that was sent more than once "
                              "in a conversation")
+    parser.add_argument("--merge", action="store_true",
+                        help="add to an earlier run in OUT_DIR: skip snaps it already has, "
+                             "never reuse its file names, reuse its timezones")
     args = parser.parse_args()
     process_chat_media(args.out, find_zips(args.zips), args.workers, args.crf, args.tz,
-                       args.sort, args.skip_resends)
+                       args.sort, args.skip_resends, args.merge)
 
 
 if __name__ == "__main__":

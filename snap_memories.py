@@ -547,10 +547,10 @@ def run_jobs(jobs, work_dir, out_dir, crf, workers, on_done):
 
 class NameAllocator:
     """Hands out YYYY-MM-DD_HHMMSS.ext names (local time), adding _2, _3, ...
-    when two files land on the same second."""
+    when two files land on the same second. Names in taken are never handed out."""
 
-    def __init__(self):
-        self.used = set()
+    def __init__(self, taken=()):
+        self.used = set(taken)
 
     def __call__(self, utc, tz, ext, folder=""):
         base = utc.astimezone(tz).strftime("%Y-%m-%d_%H%M%S")
