@@ -149,6 +149,12 @@ OUT_DIR/
     _review/unpaired_overlays/   overlays it couldn't match to one snap
 ```
 
+## Support
+
+If this saved your memories, you can buy me a coffee:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/barefootedbryan)
+
 ## Credit
 
 The overlay compositing idea comes from
