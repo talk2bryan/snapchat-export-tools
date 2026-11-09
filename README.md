@@ -87,6 +87,24 @@ docker run --rm --user "$(id -u):$(id -g)" -v ~/Downloads/snapchat:/in:ro -v ~/P
   --entrypoint python miacox/snapchat-export-tools /app/snap_chat_media.py /out/chat_media /in
 ```
 
+### Adding a newer export
+
+Add `--merge` to put a newer chat media export into a folder you already
+made, instead of starting over:
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" -v ~/Downloads/snapchat-new:/in:ro -v ~/Pictures/snapchat:/out \
+  --entrypoint python miacox/snapchat-export-tools /app/snap_chat_media.py /out/chat_media /in --merge
+```
+
+It reads the earlier `_report.csv` and skips snaps that were already
+exported. New files never take a name that's already in the folder, so
+nothing gets overwritten. A short export usually has no memories in it,
+which means no GPS, so it uses the timezone of the nearest earlier file that
+had one (within 30 days) before falling back to `--tz`. Files that failed
+last time are tried again, and new rows are added to `_report.csv`. Use the
+same `--tz`, `--no-sort` and `--skip-resends` you used the first time.
+
 ## Without Docker
 
 Needs Python 3.9+, `ffmpeg` and `exiftool` on your PATH. `tesseract` is
@@ -109,6 +127,7 @@ python3 -m venv .venv
 | `--crf N` | x264 quality when a video has to be re-encoded (default 18) |
 | `--no-sort` | don't move chat memes and stickers into subfolders |
 | `--skip-resends` | keep only the first send of a chat snap that was sent more than once in the same conversation |
+| `--merge` | (`snap_chat_media.py`) add to an earlier run in `OUT_DIR` instead of overwriting it, see [Adding a newer export](#adding-a-newer-export) |
 
 Videos are only re-encoded when an overlay is burned in or segments are
 joined. Everything else is copied as-is.
@@ -129,6 +148,12 @@ OUT_DIR/
     _report.csv
     _review/unpaired_overlays/   overlays it couldn't match to one snap
 ```
+
+## Support
+
+If this saved your memories, you can buy me a coffee:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/barefootedbryan)
 
 ## Credit
 
